@@ -30,29 +30,21 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // TV_EMBEDDED uses non-SABR stream URLs, so the cold-start PO token can be
-  // appended as a plain `pot=` query parameter — no BotGuard required.
-  // Limitation: videos with embedding disabled will fail at getBasicInfo.
-  const bootstrap = await Innertube.create({
-    generate_session_locally: true,
-    client_type: ClientType.TV_EMBEDDED,
-  })
-
-  const visitorData = bootstrap.session.context.client.visitorData ?? ""
-
-  if (!visitorData) {
-    console.warn("[converter] No visitor data — session without PO token")
-    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
-  }
-
-  const poToken = BG.PoToken.generateColdStartToken(visitorData)
-
+  // IOS client: no embedding restrictions, no BotGuard enforcement, and uses
+  // non-SABR stream URLs so the cold-start PO token can be attached as pot=.
   const yt = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.TV_EMBEDDED,
-    po_token: poToken,
-    visitor_data: visitorData,
+    client_type: ClientType.IOS,
   })
+
+  const visitorData = yt.session.context.client.visitorData ?? ""
+
+  if (visitorData && yt.session.player) {
+    const poToken = BG.PoToken.generateColdStartToken(visitorData)
+    // Apply the token only to the player so it reaches CDN stream URLs (pot=)
+    // but is not injected into InnerTube API request bodies.
+    ;(yt.session.player as { po_token: string }).po_token = poToken
+  }
 
   return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
 }
