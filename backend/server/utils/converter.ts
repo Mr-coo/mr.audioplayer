@@ -116,9 +116,8 @@ export function createMp3Stream(
 
   ;(async () => {
     const webStream = await ytInfo.download({
-      type: "video+audio",
+      type: "audio",
       quality: "best",
-      format: "any",
     })
 
     const nodeStream = Readable.fromWeb(
