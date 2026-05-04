@@ -24,35 +24,58 @@ const SESSION_TTL_MS = 25 * 60 * 1000
 interface Session {
   yt: Awaited<ReturnType<typeof Innertube.create>>
   expiresAt: number
+  // true when created with YOUTUBE_COOKIE — uses WEB client with progressive
+  // muxed formats (video+audio), false when using TV_EMBEDDED cold-start path
+  authenticated: boolean
 }
 
 let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // TV_SIMPLY (TVHTML5_SIMPLY): simplified TV interface — same non-SABR stream
-  // URLs as TV_EMBEDDED so cold-start PO token attaches as pot=, but NOT an
-  // embedded player so no embedding restriction.
-  const yt = await Innertube.create({
-    generate_session_locally: true,
-    client_type: ClientType.TV_SIMPLY,
-  })
+  const cookie = process.env.YOUTUBE_COOKIE
 
-  const visitorData = yt.session.context.client.visitorData ?? ""
-
-  if (visitorData && yt.session.player) {
-    const poToken = BG.PoToken.generateColdStartToken(visitorData)
-    // Apply the token only to the player so it reaches CDN stream URLs (pot=)
-    // but is not injected into InnerTube API request bodies.
-    ;(yt.session.player as { po_token: string }).po_token = poToken
+  if (cookie) {
+    // Authenticated path: real session cookies → WEB client has progressive
+    // muxed format URLs (no SABR) so no BotGuard token is needed.
+    // Works for ALL videos including those with embedding disabled.
+    const yt = await Innertube.create({
+      cookie,
+      client_type: ClientType.WEB,
+    })
+    return { yt, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: true }
   }
 
-  return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
+  // Unauthenticated path: TV_EMBEDDED uses non-SABR stream URLs, so the
+  // cold-start PO token can be attached as pot=. Only works for videos that
+  // allow embedding.
+  const bootstrap = await Innertube.create({
+    generate_session_locally: true,
+    client_type: ClientType.TV_EMBEDDED,
+  })
+
+  const visitorData = bootstrap.session.context.client.visitorData ?? ""
+
+  if (!visitorData) {
+    console.warn("[converter] No visitor data — session without PO token")
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: false }
+  }
+
+  const poToken = BG.PoToken.generateColdStartToken(visitorData)
+
+  const yt = await Innertube.create({
+    generate_session_locally: true,
+    client_type: ClientType.TV_EMBEDDED,
+    po_token: poToken,
+    visitor_data: visitorData,
+  })
+
+  return { yt, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: false }
 }
 
-async function getInnertube() {
+async function getSession(): Promise<Session> {
   if (_session && Date.now() < _session.expiresAt) {
-    return _session.yt
+    return _session
   }
 
   if (!_creating) {
@@ -68,7 +91,7 @@ async function getInnertube() {
       })
   }
 
-  return (await _creating).yt
+  return _creating
 }
 
 function invalidateSession() {
@@ -90,7 +113,7 @@ function extractId(url: string): string {
 }
 
 export async function getVideoInfo(url: string) {
-  const yt = await getInnertube()
+  const { yt } = await getSession()
   const id = extractId(url)
   let info: Awaited<ReturnType<typeof yt.getBasicInfo>>
   try {
@@ -110,19 +133,20 @@ export async function getVideoInfo(url: string) {
   return { title, info }
 }
 
-export function createMp3Stream(
+export async function createMp3Stream(
   ytInfo: Awaited<ReturnType<Innertube["getBasicInfo"]>> | Awaited<ReturnType<Innertube["getInfo"]>>,
-): PassThrough {
+  authenticated: boolean,
+): Promise<PassThrough> {
   const output = new PassThrough()
 
   ;(async () => {
-    const sampleUrl = ytInfo.streaming_data?.adaptive_formats?.find((f: { has_audio?: boolean; has_video?: boolean }) => f.has_audio && !f.has_video)
-    console.log("[converter] sabr in url:", (sampleUrl as { url?: string })?.url?.includes("sabr") ?? "no url")
-
-    const webStream = await ytInfo.download({
-      type: "audio",
-      quality: "best",
-    })
+    // Authenticated WEB sessions: use progressive muxed format (video+audio,
+    // single fetch, no SABR). TV_EMBEDDED sessions: adaptive audio-only.
+    const webStream = await ytInfo.download(
+      authenticated
+        ? { type: "video+audio", quality: "best", format: "any" }
+        : { type: "audio", quality: "best" },
+    )
 
     const nodeStream = Readable.fromWeb(
       webStream as Parameters<typeof Readable.fromWeb>[0],
