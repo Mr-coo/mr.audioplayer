@@ -101,7 +101,7 @@ export async function getVideoInfo(url: string) {
   const id = extractId(url)
   let info: Awaited<ReturnType<typeof yt.getInfo>>
   try {
-    info = await yt.getInfo(id)
+    info = await yt.getBasicInfo(id)
   } catch (err) {
     invalidateSession()
     throw err
