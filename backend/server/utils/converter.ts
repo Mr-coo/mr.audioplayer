@@ -30,11 +30,12 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // TV (TVHTML5) client: full TV interface — no embedding restrictions, and TV
-  // devices use non-SABR stream URLs so the cold-start PO token attaches as pot=.
+  // TV_SIMPLY (TVHTML5_SIMPLY): simplified TV interface — same non-SABR stream
+  // URLs as TV_EMBEDDED so cold-start PO token attaches as pot=, but NOT an
+  // embedded player so no embedding restriction.
   const yt = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.TV,
+    client_type: ClientType.TV_SIMPLY,
   })
 
   const visitorData = yt.session.context.client.visitorData ?? ""
