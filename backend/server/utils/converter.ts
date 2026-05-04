@@ -30,11 +30,11 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // IOS client: no embedding restrictions, no BotGuard enforcement, and uses
-  // non-SABR stream URLs so the cold-start PO token can be attached as pot=.
+  // TV (TVHTML5) client: full TV interface — no embedding restrictions, and TV
+  // devices use non-SABR stream URLs so the cold-start PO token attaches as pot=.
   const yt = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.IOS,
+    client_type: ClientType.TV,
   })
 
   const visitorData = yt.session.context.client.visitorData ?? ""
@@ -115,6 +115,9 @@ export function createMp3Stream(
   const output = new PassThrough()
 
   ;(async () => {
+    const sampleUrl = ytInfo.streaming_data?.adaptive_formats?.find((f: { has_audio?: boolean; has_video?: boolean }) => f.has_audio && !f.has_video)
+    console.log("[converter] sabr in url:", (sampleUrl as { url?: string })?.url?.includes("sabr") ?? "no url")
+
     const webStream = await ytInfo.download({
       type: "audio",
       quality: "best",
