@@ -1,4 +1,5 @@
 import { Innertube, Platform, ClientType } from "youtubei.js"
+import BG from "bgutils-js"
 import { runInNewContext } from "node:vm"
 import ffmpeg from "fluent-ffmpeg"
 import ffmpegPath from "ffmpeg-static"
@@ -29,12 +30,29 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // ANDROID client: no embedding restrictions (unlike TV_EMBEDDED) and no
-  // BotGuard/PO-token enforcement (unlike WEB). Works in serverless environments.
-  const yt = await Innertube.create({
+  // ANDROID client: no embedding restrictions (unlike TV_EMBEDDED).
+  // Cold-start token satisfies YouTube CDN sps=2 without needing BotGuard.
+  const bootstrap = await Innertube.create({
     generate_session_locally: true,
     client_type: ClientType.ANDROID,
   })
+
+  const visitorData = bootstrap.session.context.client.visitorData ?? ""
+
+  if (!visitorData) {
+    console.warn("[converter] No visitor data — session without PO token")
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
+  }
+
+  const poToken = BG.PoToken.generateColdStartToken(visitorData)
+
+  const yt = await Innertube.create({
+    generate_session_locally: true,
+    client_type: ClientType.ANDROID,
+    po_token: poToken,
+    visitor_data: visitorData,
+  })
+
   return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
 }
 
