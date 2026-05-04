@@ -20,12 +20,15 @@ export default defineEventHandler(async (event) => {
   } catch (err: any) {
     const msg: string = err?.message ?? "Unknown error"
     const msgLower = msg.toLowerCase()
+    // TV_EMBEDDED client cannot access videos with embedding disabled.
+    if (msgLower.includes("unavailable")) {
+      throw createError({
+        statusCode: 403,
+        statusMessage: "This video cannot be converted — the creator has disabled external playback.",
+      })
+    }
     const status =
-      msgLower.includes("private") ||
-      msgLower.includes("unavailable") ||
-      msgLower.includes("login required")
-        ? 403
-        : 502
+      msgLower.includes("private") || msgLower.includes("login required") ? 403 : 502
     throw createError({ statusCode: status, statusMessage: `Could not fetch video info: ${msg}` })
   }
 

@@ -30,11 +30,12 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // ANDROID client: no embedding restrictions (unlike TV_EMBEDDED).
-  // Cold-start token satisfies YouTube CDN sps=2 without needing BotGuard.
+  // TV_EMBEDDED uses non-SABR stream URLs, so the cold-start PO token can be
+  // appended as a plain `pot=` query parameter — no BotGuard required.
+  // Limitation: videos with embedding disabled will fail at getBasicInfo.
   const bootstrap = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.ANDROID,
+    client_type: ClientType.TV_EMBEDDED,
   })
 
   const visitorData = bootstrap.session.context.client.visitorData ?? ""
@@ -48,7 +49,7 @@ async function createSession(): Promise<Session> {
 
   const yt = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.ANDROID,
+    client_type: ClientType.TV_EMBEDDED,
     po_token: poToken,
     visitor_data: visitorData,
   })
@@ -117,16 +118,15 @@ export async function getVideoInfo(url: string) {
 }
 
 export function createMp3Stream(
-  ytInfo: Awaited<ReturnType<Innertube["getBasicInfo"]>>,
+  ytInfo: Awaited<ReturnType<Innertube["getBasicInfo"]>> | Awaited<ReturnType<Innertube["getInfo"]>>,
 ): PassThrough {
   const output = new PassThrough()
 
   ;(async () => {
-    // Request audio-only: Android client provides adaptive audio (opus/aac),
-    // which avoids downloading video data we discard anyway.
     const webStream = await ytInfo.download({
-      type: "audio",
+      type: "video+audio",
       quality: "best",
+      format: "any",
     })
 
     const nodeStream = Readable.fromWeb(
