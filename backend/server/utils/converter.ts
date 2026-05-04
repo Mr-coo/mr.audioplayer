@@ -32,9 +32,22 @@ let _creating: Promise<Session> | null = null
 
 async function buildPoToken(visitorData: string): Promise<string | null> {
   try {
-    // Each challenge run needs its own globalObj so BotGuard VM instances
-    // don't bleed across calls.
+    // runInNewContext gives the BotGuard script ONLY what's in globalObj —
+    // Node.js globals (window, document, btoa …) are not inherited.
+    const t0 = Date.now()
     const globalObj: Record<string, any> = {}
+    globalObj.window            = globalObj
+    globalObj.self              = globalObj
+    globalObj.globalThis        = globalObj
+    globalObj.btoa              = (s: string) => Buffer.from(s, "binary").toString("base64")
+    globalObj.atob              = (s: string) => Buffer.from(s, "base64").toString("binary")
+    globalObj.performance       = { timeOrigin: t0, now: () => Date.now() - t0 }
+    globalObj.document          = { hidden: false, readyState: "complete" }
+    globalObj.setTimeout        = setTimeout
+    globalObj.clearTimeout      = clearTimeout
+    globalObj.setImmediate      = setImmediate
+    globalObj.requestIdleCallback = undefined
+    globalObj.console           = console
 
     const bgConfig: BgConfig = {
       fetch,

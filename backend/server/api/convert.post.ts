@@ -29,8 +29,11 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: status, statusMessage: `Could not fetch video info: ${msg}` })
   }
 
+  // HTTP headers must be ASCII; use RFC 6266 filename* for Unicode titles.
+  const asciiName = title.replace(/[^\x20-\x7E]/g, "_") + ".mp3"
+  const encodedName = encodeURIComponent(title + ".mp3")
   setResponseHeader(event, "Content-Type", "audio/mpeg")
-  setResponseHeader(event, "Content-Disposition", `attachment; filename="${title}.mp3"`)
+  setResponseHeader(event, "Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`)
   setResponseHeader(event, "Transfer-Encoding", "chunked")
 
   // Pass the already-fetched info so the download starts immediately
