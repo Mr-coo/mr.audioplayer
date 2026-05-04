@@ -19,9 +19,13 @@ export default defineEventHandler(async (event) => {
     ;({ title, info: ytInfo } = await getVideoInfo(url))
   } catch (err: any) {
     const msg: string = err?.message ?? "Unknown error"
-    const status = msg.toLowerCase().includes("private") || msg.toLowerCase().includes("unavailable")
-      ? 400
-      : 502
+    const msgLower = msg.toLowerCase()
+    const status =
+      msgLower.includes("private") ||
+      msgLower.includes("unavailable") ||
+      msgLower.includes("login required")
+        ? 403
+        : 502
     throw createError({ statusCode: status, statusMessage: `Could not fetch video info: ${msg}` })
   }
 

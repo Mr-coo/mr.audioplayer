@@ -1,4 +1,5 @@
 import { Innertube, Platform } from "youtubei.js"
+import BG, { type BgConfig } from "bgutils-js"
 import { runInNewContext } from "node:vm"
 import ffmpeg from "fluent-ffmpeg"
 import ffmpegPath from "ffmpeg-static"
@@ -18,17 +19,106 @@ Platform.load({
     >,
 })
 
-let _yt: Awaited<ReturnType<typeof Innertube.create>> | null = null
+const BG_REQUEST_KEY = "O43z0dpjhgX20SCx4KAo"
+const SESSION_TTL_MS = 25 * 60 * 1000
+
+interface Session {
+  yt: Awaited<ReturnType<typeof Innertube.create>>
+  expiresAt: number
+}
+
+let _session: Session | null = null
+let _creating: Promise<Session> | null = null
+
+async function buildPoToken(visitorData: string): Promise<string | null> {
+  try {
+    // Each challenge run needs its own globalObj so BotGuard VM instances
+    // don't bleed across calls.
+    const globalObj: Record<string, any> = {}
+
+    const bgConfig: BgConfig = {
+      fetch,
+      globalObj,
+      identifier: visitorData,
+      requestKey: BG_REQUEST_KEY,
+    }
+
+    const challenge = await BG.Challenge.create(bgConfig)
+    if (!challenge) return null
+
+    const interpreterJs =
+      challenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue
+    if (interpreterJs) {
+      // Run BotGuard script in an isolated context that shares globalObj, so
+      // the VM is registered under globalObj[challenge.globalName].
+      runInNewContext(interpreterJs, globalObj)
+    }
+
+    const { poToken } = await BG.PoToken.generate({
+      program: challenge.program,
+      globalName: challenge.globalName,
+      bgConfig,
+    })
+
+    return poToken
+  } catch (err) {
+    console.warn("[converter] PO token generation failed:", err)
+    return null
+  }
+}
+
+async function createSession(): Promise<Session> {
+  // Step 1: bootstrap a session just to obtain a stable visitor data string.
+  const bootstrap = await Innertube.create({ generate_session_locally: true })
+  const visitorData = bootstrap.session.context.client.visitorData ?? ""
+
+  if (!visitorData) {
+    console.warn("[converter] No visitor data — session created without PO token")
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
+  }
+
+  // Step 2: generate a PO token bound to that visitor data.
+  const poToken = await buildPoToken(visitorData)
+
+  if (!poToken) {
+    console.warn("[converter] PO token unavailable — some videos may fail with LOGIN_REQUIRED")
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
+  }
+
+  // Step 3: create the real session with PO token so stream URLs are trusted.
+  const yt = await Innertube.create({
+    generate_session_locally: true,
+    po_token: poToken,
+    visitor_data: visitorData,
+  })
+
+  return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
+}
 
 async function getInnertube() {
-  if (!_yt) {
-    _yt = await Innertube.create({ generate_session_locally: true })
+  if (_session && Date.now() < _session.expiresAt) {
+    return _session.yt
   }
-  return _yt
+
+  if (!_creating) {
+    _creating = createSession()
+      .then((session) => {
+        _session = session
+        _creating = null
+        return session
+      })
+      .catch((err) => {
+        _creating = null
+        throw err
+      })
+  }
+
+  return (await _creating).yt
 }
 
 function invalidateSession() {
-  _yt = null
+  _session = null
+  _creating = null
 }
 
 const YT_ID_RE =
@@ -71,9 +161,6 @@ export function createMp3Stream(
   const output = new PassThrough()
 
   ;(async () => {
-    // YouTube withholds DASH audio-only URLs in non-browser sessions.
-    // The combined video+audio format always has a real URL — ffmpeg
-    // drops the video track and outputs audio-only MP3.
     const webStream = await ytInfo.download({
       type: "video+audio",
       quality: "best",
