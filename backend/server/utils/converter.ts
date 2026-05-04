@@ -1,5 +1,4 @@
 import { Innertube, Platform, ClientType } from "youtubei.js"
-import BG from "bgutils-js"
 import { runInNewContext } from "node:vm"
 import ffmpeg from "fluent-ffmpeg"
 import ffmpegPath from "ffmpeg-static"
@@ -30,30 +29,12 @@ let _session: Session | null = null
 let _creating: Promise<Session> | null = null
 
 async function createSession(): Promise<Session> {
-  // TV_EMBEDDED client has more relaxed PO-token enforcement than the WEB
-  // client; a cold-start token (pure XOR computation, no BotGuard needed)
-  // is sufficient for it in Vercel/Lambda serverless environments.
-  const bootstrap = await Innertube.create({
-    generate_session_locally: true,
-    client_type: ClientType.TV_EMBEDDED,
-  })
-
-  const visitorData = bootstrap.session.context.client.visitorData ?? ""
-
-  if (!visitorData) {
-    console.warn("[converter] No visitor data — session without PO token")
-    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
-  }
-
-  const poToken = BG.PoToken.generateColdStartToken(visitorData)
-
+  // ANDROID client: no embedding restrictions (unlike TV_EMBEDDED) and no
+  // BotGuard/PO-token enforcement (unlike WEB). Works in serverless environments.
   const yt = await Innertube.create({
     generate_session_locally: true,
-    client_type: ClientType.TV_EMBEDDED,
-    po_token: poToken,
-    visitor_data: visitorData,
+    client_type: ClientType.ANDROID,
   })
-
   return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
 }
 
@@ -99,7 +80,7 @@ function extractId(url: string): string {
 export async function getVideoInfo(url: string) {
   const yt = await getInnertube()
   const id = extractId(url)
-  let info: Awaited<ReturnType<typeof yt.getInfo>>
+  let info: Awaited<ReturnType<typeof yt.getBasicInfo>>
   try {
     info = await yt.getBasicInfo(id)
   } catch (err) {
@@ -118,15 +99,16 @@ export async function getVideoInfo(url: string) {
 }
 
 export function createMp3Stream(
-  ytInfo: Awaited<ReturnType<Innertube["getInfo"]>>,
+  ytInfo: Awaited<ReturnType<Innertube["getBasicInfo"]>>,
 ): PassThrough {
   const output = new PassThrough()
 
   ;(async () => {
+    // Request audio-only: Android client provides adaptive audio (opus/aac),
+    // which avoids downloading video data we discard anyway.
     const webStream = await ytInfo.download({
-      type: "video+audio",
+      type: "audio",
       quality: "best",
-      format: "mp4",
     })
 
     const nodeStream = Readable.fromWeb(
