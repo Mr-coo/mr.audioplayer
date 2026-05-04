@@ -24,9 +24,6 @@ const SESSION_TTL_MS = 25 * 60 * 1000
 interface Session {
   yt: Awaited<ReturnType<typeof Innertube.create>>
   expiresAt: number
-  // true when created with YOUTUBE_COOKIE — uses WEB client with progressive
-  // muxed formats (video+audio), false when using TV_EMBEDDED cold-start path
-  authenticated: boolean
 }
 
 let _session: Session | null = null
@@ -35,34 +32,38 @@ let _creating: Promise<Session> | null = null
 async function createSession(): Promise<Session> {
   const cookie = process.env.YOUTUBE_COOKIE
 
-  if (cookie) {
-    // Authenticated path: real session cookies → WEB client has progressive
-    // muxed format URLs (no SABR) so no BotGuard token is needed.
-    // Works for ALL videos including those with embedding disabled.
-    const yt = await Innertube.create({
-      cookie,
-      client_type: ClientType.WEB,
-    })
-    return { yt, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: true }
-  }
-
-  // Unauthenticated path: TV_EMBEDDED uses non-SABR stream URLs, so the
-  // cold-start PO token can be attached as pot=. Only works for videos that
-  // allow embedding.
-  const bootstrap = await Innertube.create({
-    generate_session_locally: true,
-    client_type: ClientType.TV_EMBEDDED,
-  })
+  // TV_EMBEDDED is the only client with non-SABR stream URLs, meaning the
+  // cold-start PO token can be attached as `pot=` in the CDN request.
+  //
+  // When YOUTUBE_COOKIE is set, the authenticated InnerTube API call may
+  // bypass the embedding-disabled restriction that blocks unauthenticated
+  // TV_EMBEDDED sessions. The CDN still needs the cold-start token (cookies
+  // don't cross from youtube.com to the googlevideo.com CDN domain).
+  const bootstrap = await Innertube.create(
+    cookie
+      ? { cookie, client_type: ClientType.TV_EMBEDDED }
+      : { generate_session_locally: true, client_type: ClientType.TV_EMBEDDED },
+  )
 
   const visitorData = bootstrap.session.context.client.visitorData ?? ""
 
   if (!visitorData) {
     console.warn("[converter] No visitor data — session without PO token")
-    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: false }
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
   }
 
   const poToken = BG.PoToken.generateColdStartToken(visitorData)
 
+  if (cookie) {
+    // Authenticated path: apply the cold-start token only to the player so it
+    // reaches CDN stream URLs (pot=) without appearing in API request bodies.
+    if (bootstrap.session.player) {
+      ;(bootstrap.session.player as { po_token: string }).po_token = poToken
+    }
+    return { yt: bootstrap, expiresAt: Date.now() + SESSION_TTL_MS }
+  }
+
+  // Unauthenticated path: create a second session with the token baked in.
   const yt = await Innertube.create({
     generate_session_locally: true,
     client_type: ClientType.TV_EMBEDDED,
@@ -70,7 +71,7 @@ async function createSession(): Promise<Session> {
     visitor_data: visitorData,
   })
 
-  return { yt, expiresAt: Date.now() + SESSION_TTL_MS, authenticated: false }
+  return { yt, expiresAt: Date.now() + SESSION_TTL_MS }
 }
 
 async function getSession(): Promise<Session> {
@@ -133,20 +134,16 @@ export async function getVideoInfo(url: string) {
   return { title, info }
 }
 
-export async function createMp3Stream(
+export function createMp3Stream(
   ytInfo: Awaited<ReturnType<Innertube["getBasicInfo"]>> | Awaited<ReturnType<Innertube["getInfo"]>>,
-  authenticated: boolean,
-): Promise<PassThrough> {
+): PassThrough {
   const output = new PassThrough()
 
   ;(async () => {
-    // Authenticated WEB sessions: use progressive muxed format (video+audio,
-    // single fetch, no SABR). TV_EMBEDDED sessions: adaptive audio-only.
-    const webStream = await ytInfo.download(
-      authenticated
-        ? { type: "video+audio", quality: "best", format: "any" }
-        : { type: "audio", quality: "best" },
-    )
+    const webStream = await ytInfo.download({
+      type: "audio",
+      quality: "best",
+    })
 
     const nodeStream = Readable.fromWeb(
       webStream as Parameters<typeof Readable.fromWeb>[0],

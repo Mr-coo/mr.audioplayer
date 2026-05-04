@@ -12,8 +12,6 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "Invalid YouTube URL" })
   }
 
-  const authenticated = !!process.env.YOUTUBE_COOKIE
-
   let title: string
   let ytInfo: Awaited<ReturnType<typeof getVideoInfo>>["info"]
 
@@ -23,12 +21,10 @@ export default defineEventHandler(async (event) => {
     const msg: string = err?.message ?? "Unknown error"
     const msgLower = msg.toLowerCase()
     if (msgLower.includes("unavailable")) {
-      throw createError({
-        statusCode: 403,
-        statusMessage: authenticated
-          ? "Video unavailable: this video cannot be played."
-          : "Video unavailable: the creator has disabled external playback. Set YOUTUBE_COOKIE to unlock all videos.",
-      })
+      const hint = process.env.YOUTUBE_COOKIE
+        ? "Video unavailable: this video cannot be played externally."
+        : "Video unavailable: the creator has disabled external playback. Set YOUTUBE_COOKIE in env to unlock all videos."
+      throw createError({ statusCode: 403, statusMessage: hint })
     }
     const status =
       msgLower.includes("private") || msgLower.includes("login required") ? 403 : 502
@@ -42,6 +38,6 @@ export default defineEventHandler(async (event) => {
   setResponseHeader(event, "Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`)
   setResponseHeader(event, "Transfer-Encoding", "chunked")
 
-  const stream = await createMp3Stream(ytInfo, authenticated)
+  const stream = createMp3Stream(ytInfo)
   return sendStream(event, stream)
 })
