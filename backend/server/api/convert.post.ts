@@ -29,8 +29,15 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: status, statusMessage: `Could not fetch video info: ${msg}` })
   }
 
+  const asciiTitle = title.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_")
+  const encodedTitle = encodeURIComponent(title)
+
   setResponseHeader(event, "Content-Type", "audio/mpeg")
-  setResponseHeader(event, "Content-Disposition", `attachment; filename="${title}.mp3"`)
+  setResponseHeader(
+    event,
+    "Content-Disposition",
+    `attachment; filename="${asciiTitle}.mp3"; filename*=UTF-8''${encodedTitle}.mp3`,
+  )
   setResponseHeader(event, "Transfer-Encoding", "chunked")
 
   // Pass the already-fetched info so the download starts immediately
